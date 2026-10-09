@@ -11,7 +11,8 @@ import AdminDashboard from "./pages/AdminDashboard.jsx";
 import Navbar from "./components/Navbar.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import PrepaidMeterHelp from "./pages/PrepaidMeterHelp.jsx";
-
+import LoadShedding from "./pages/LoadShedding.jsx";
+import LoadSheddingManager from "./components/LoadSheddingManager.jsx";
 function App() {
   return (
     <>
@@ -26,6 +27,7 @@ function App() {
           element={<ComplaintForm />}
         />
         <Route path="/prepaid-help" element={<PrepaidMeterHelp />} />
+        <Route path="/load-shedding" element={<LoadShedding />} />
 
         <Route
           path="/status"
@@ -37,6 +39,7 @@ function App() {
 
 
 
+
         {/* Protected Admin Routes */}
         <Route element={<ProtectedRoute />}>
           <Route
@@ -44,8 +47,19 @@ function App() {
             element={<AdminDashboard />}
           />
         </Route>
+
+
+
+
+
+        // আপনার Routes-এর ভেতরে:
+        <Route
+          path="/admin/load-shedding"
+          element={<LoadSheddingManager />}
+        />
       </Routes>
-      {/* <PrepaidMeterHelp /> */}
+
+
     </>
   );
 }

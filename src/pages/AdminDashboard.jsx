@@ -1,5 +1,6 @@
 
 
+
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -33,6 +34,7 @@ Target,
 Calendar,
 Layers3,
 } from "lucide-react";
+import LoadSheddingForm from "../components/LoadSheddingForm";
 
 const API_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL;
 const ADMIN_KEY = import.meta.env.VITE_ADMIN_KEY || "";
@@ -43,6 +45,8 @@ function AdminDashboard() {
 const navigate = useNavigate();
 
 const [complaints, setComplaints] = useState([]);
+const [loadSheddingRows, setLoadSheddingRows] = useState([]);
+const [loadSheddingLoading, setLoadSheddingLoading] = useState(false);
 const [loading, setLoading] = useState(true);
 const [refreshing, setRefreshing] = useState(false);
 const [error, setError] = useState("");
@@ -104,8 +108,37 @@ try {
 
 };
 
+// =========================
+// Fetch Load Shedding History (Sheet2)
+// =========================
+const fetchLoadShedding = async (isRefresh = false) => {
+  if (!API_URL) return;
+  if (isRefresh) setLoadSheddingLoading(true);
+  try {
+    const url = `${API_URL}?action=getLoadShedding&key=${encodeURIComponent(ADMIN_KEY)}&t=${Date.now()}`;
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!data.success) throw new Error(data.message || "Load shedding data load করা যায়নি।");
+    const rows = Array.isArray(data.loadShedding)
+      ? data.loadShedding
+      : Array.isArray(data.data)
+        ? data.data
+        : Array.isArray(data.records)
+          ? data.records
+          : Array.isArray(data)
+            ? data
+            : [];
+    setLoadSheddingRows(rows);
+  } catch (err) {
+    console.error("Load shedding history:", err);
+  } finally {
+    setLoadSheddingLoading(false);
+  }
+};
+
 useEffect(() => {
-fetchComplaints();
+  fetchComplaints();
+  fetchLoadShedding();
 }, []);
 
 // =========================
@@ -428,6 +461,69 @@ const maxMonthlyCount = Math.max(
 );
 
 // =========================
+// Load Shedding Monthly Analytics (last 6 months)
+// =========================
+const parseLoadSheddingDate = (value) => {
+  if (!value) return null;
+  const raw = String(value).trim();
+  let match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  match = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+  if (match) return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+};
+
+const getLoadSheddingDuration = (item) => {
+  const startValue = item.startTime ?? item.StartTime ?? "";
+  const endValue = item.endTime ?? item.EndTime ?? "";
+  const toMinutes = (value) => {
+    const match = String(value).trim().match(/^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const meridiem = (match[3] || "").toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    if (hour > 23 || minute > 59) return null;
+    return hour * 60 + minute;
+  };
+  const start = toMinutes(startValue);
+  const end = toMinutes(endValue);
+  if (start === null || end === null) return 0;
+  let duration = end - start;
+  if (duration < 0) duration += 24 * 60;
+  return duration / 60;
+};
+
+const loadSheddingMonthlyChart = useMemo(() => {
+  const now = new Date();
+  const months = [];
+  for (let i = 5; i >= 0; i--) {
+    const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    const rows = loadSheddingRows.filter((item) => {
+      const date = parseLoadSheddingDate(item.date ?? item.Date);
+      return date && date >= monthStart && date < nextMonth;
+    });
+    const hours = rows.reduce((total, item) => total + getLoadSheddingDuration(item), 0);
+    const completed = rows.filter((item) => String(item.status ?? item.Status ?? "").toLowerCase() === "completed").length;
+    months.push({
+      key: `${monthStart.getFullYear()}-${monthStart.getMonth()}`,
+      label: monthStart.toLocaleDateString("en-GB", { month: "short", year: "2-digit" }),
+      count: rows.length,
+      hours: Math.round(hours * 10) / 10,
+      completed,
+    });
+  }
+  return months;
+}, [loadSheddingRows]);
+
+const maxLoadSheddingCount = Math.max(...loadSheddingMonthlyChart.map((item) => item.count), 1);
+const totalLoadSheddingHours = Math.round(loadSheddingMonthlyChart.reduce((total, item) => total + item.hours, 0) * 10) / 10;
+const totalLoadSheddingRecords = loadSheddingMonthlyChart.reduce((total, item) => total + item.count, 0);
+
+// =========================
 // Status Helpers
 // =========================
 const getStatusStyle = (status) => {
@@ -525,7 +621,7 @@ return ( <div className="min-h-screen bg-slate-50 text-slate-800">
           </div>
 
           <button
-            onClick={() => fetchComplaints(true)}
+            onClick={() => { fetchComplaints(true); fetchLoadShedding(true); }}
             disabled={refreshing}
             className="group inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -561,7 +657,7 @@ return ( <div className="min-h-screen bg-slate-50 text-slate-800">
   {/* =========================
       Main
   ========================= */}
-  <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+  <main className="mx-auto w-full max-w-[1600px] px-3 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
 
     {/* Error */}
     {error && (
@@ -589,6 +685,117 @@ return ( <div className="min-h-screen bg-slate-50 text-slate-800">
         </button>
       </div>
     )}
+
+    {/* =========================
+        Load Shedding Form — kept at the top for quick entry
+    ========================= */}
+    <div className="mb-6">
+      <LoadSheddingForm
+        adminKey={ADMIN_KEY}
+        onSuccess={() => {
+          fetchComplaints(true);
+          fetchLoadShedding(true);
+        }}
+      />
+    </div>
+
+    {/* =========================
+        Monthly Load Shedding History Chart
+    ========================= */}
+    <section className="mb-6 overflow-hidden rounded-3xl border border-orange-100 bg-white shadow-sm">
+      <div className="bg-gradient-to-r from-orange-600 via-amber-500 to-yellow-500 px-5 py-5 text-white sm:px-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white/20">
+              <Zap size={23} />
+            </div>
+            <div>
+              <h3 className="text-lg font-black sm:text-xl">Monthly Load Shedding History</h3>
+              <p className="mt-1 text-xs text-white/90 sm:text-sm">গত ৬ মাসের লোডশেডিং রেকর্ড • Google Sheet Sheet2</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => fetchLoadShedding(true)}
+            disabled={loadSheddingLoading}
+            className="inline-flex min-h-10 items-center justify-center gap-2 self-start rounded-xl border border-white/30 bg-white/15 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/25 disabled:opacity-60 sm:self-auto"
+          >
+            <RefreshCw size={16} className={loadSheddingLoading ? "animate-spin" : ""} />
+            Refresh history
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-3 sm:p-5">
+        <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4">
+          <p className="text-xs font-bold text-orange-700">Last 6 months · Records</p>
+          <p className="mt-1 text-2xl font-black text-orange-800">{totalLoadSheddingRecords}</p>
+        </div>
+        <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+          <p className="text-xs font-bold text-blue-700">Estimated scheduled hours</p>
+          <p className="mt-1 text-2xl font-black text-blue-800">{totalLoadSheddingHours} <span className="text-sm">hrs</span></p>
+        </div>
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+          <p className="text-xs font-bold text-emerald-700">Completed notices</p>
+          <p className="mt-1 text-2xl font-black text-emerald-800">{loadSheddingMonthlyChart.reduce((total, item) => total + item.completed, 0)}</p>
+        </div>
+      </div>
+
+      <div className="px-4 pb-5 sm:px-6">
+        {loadSheddingRows.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-10 text-center">
+            <Zap className="mx-auto text-slate-300" size={30} />
+            <p className="mt-3 text-sm font-bold text-slate-600">এখনো কোনো Load Shedding history পাওয়া যায়নি</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">Sheet2-এ রেকর্ড আছে কি না এবং Apps Script-এর getLoadShedding action পরীক্ষা করুন।</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              {loadSheddingMonthlyChart.map((item) => (
+                <div key={item.key} className="min-w-0 rounded-2xl border border-slate-100 bg-slate-50 p-3 sm:p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-xs font-extrabold text-slate-600">{item.label}</span>
+                    <span className="text-xs font-black text-orange-700">{item.count}</span>
+                  </div>
+                  <div className="mt-3 flex h-28 items-end rounded-xl bg-white p-2">
+                    <div
+                      className="w-full rounded-lg bg-gradient-to-t from-orange-600 to-amber-400 transition-all duration-500"
+                      style={{ height: `${item.count ? Math.max((item.count / maxLoadSheddingCount) * 100, 8) : 3}%` }}
+                      title={`${item.count} notices`}
+                    />
+                  </div>
+                  <p className="mt-3 text-sm font-black text-slate-800">{item.hours} hrs</p>
+                  <p className="mt-0.5 text-[11px] text-slate-500">{item.completed} completed</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-100">
+              <table className="w-full min-w-[520px] text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-extrabold">Month</th>
+                    <th className="px-4 py-3 font-extrabold">Notices</th>
+                    <th className="px-4 py-3 font-extrabold">Estimated hours</th>
+                    <th className="px-4 py-3 font-extrabold">Completed</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {loadSheddingMonthlyChart.map((item) => (
+                    <tr key={`${item.key}-row`} className="hover:bg-orange-50/50">
+                      <td className="px-4 py-3 font-bold text-slate-700">{item.label}</td>
+                      <td className="px-4 py-3 font-black text-orange-700">{item.count}</td>
+                      <td className="px-4 py-3 text-slate-600">{item.hours} hours</td>
+                      <td className="px-4 py-3 text-emerald-700">{item.completed}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-[11px] leading-5 text-slate-400">নোট: Estimated hours শুরুর ও শেষের সময় থেকে গণনা করা হয়। একাধিক feeder/area-র একই সময়ে থাকা নোটিশ আলাদা রেকর্ড হিসেবে গণনা হবে।</p>
+          </>
+        )}
+      </div>
+    </section>
 
     {/* =========================
         Hero
@@ -777,149 +984,8 @@ return ( <div className="min-h-screen bg-slate-50 text-slate-800">
       </div>
     </section>
 
-    {/* =========================
-        Charts
-    ========================= */}
-    <section className="mb-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
-
-      {/* Daily Chart */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                <BarChart3 size={18} />
-              </div>
-
-              <h3 className="font-extrabold text-slate-900">
-                Daily Complaints
-              </h3>
-            </div>
-
-            <p className="mt-1 text-xs text-slate-500">
-              সাম্প্রতিক দিনের অভিযোগ
-            </p>
-          </div>
-
-          <div className="relative">
-            <select
-              value={chartPeriod}
-              onChange={(e) => setChartPeriod(e.target.value)}
-              className="h-9 appearance-none rounded-lg border border-slate-200 bg-slate-50 pl-3 pr-8 text-xs font-bold text-slate-600 outline-none focus:border-emerald-400"
-            >
-              <option value="7">Last 7 Days</option>
-              <option value="14">Last 14 Days</option>
-              <option value="30">Last 30 Days</option>
-            </select>
-
-            <ChevronDown
-              size={13}
-              className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-          </div>
-        </div>
-
-        <div className="flex h-64 items-end gap-2 overflow-x-auto pb-7">
-          {dailyChart.map((item) => {
-            const height =
-              item.count === 0
-                ? 5
-                : Math.max(
-                    (item.count / maxDailyCount) * 100,
-                    8
-                  );
-
-            return (
-              <div
-                key={item.date.toISOString()}
-                className="group relative flex h-full min-w-[32px] flex-1 flex-col justify-end"
-              >
-                <div className="relative flex flex-1 items-end justify-center">
-
-                  <div
-                    className="w-full max-w-[30px] rounded-t-lg bg-gradient-to-t from-emerald-600 to-teal-400 transition-all duration-500 group-hover:from-emerald-700 group-hover:to-teal-500"
-                    style={{
-                      height: `${height}%`,
-                    }}
-                  />
-
-                  <div className="absolute bottom-full left-1/2 mb-2 hidden -translate-x-1/2 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-bold text-white shadow-lg group-hover:block whitespace-nowrap">
-                    {item.count} complaint
-                  </div>
-                </div>
-
-                <span className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[9px] font-semibold text-slate-400">
-                  {item.label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Monthly Chart */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-
-        <div className="mb-6">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-50 text-purple-600">
-              <TrendingUp size={18} />
-            </div>
-
-            <h3 className="font-extrabold text-slate-900">
-              Monthly Complaints
-            </h3>
-          </div>
-
-          <p className="mt-1 text-xs text-slate-500">
-            গত ৬ মাসের অভিযোগের trend
-          </p>
-        </div>
-
-        <div className="flex h-64 items-end gap-4 overflow-x-auto pb-7">
-          {monthlyChart.map((item) => {
-            const height =
-              item.count === 0
-                ? 5
-                : Math.max(
-                    (item.count / maxMonthlyCount) * 100,
-                    8
-                  );
-
-            return (
-              <div
-                key={item.date.toISOString()}
-                className="group relative flex h-full min-w-[45px] flex-1 flex-col justify-end"
-              >
-                <div className="relative flex flex-1 items-end justify-center">
-
-                  <div
-                    className="w-full max-w-[42px] rounded-t-xl bg-gradient-to-t from-blue-600 to-indigo-400 transition-all duration-500 group-hover:from-blue-700 group-hover:to-indigo-500"
-                    style={{
-                      height: `${height}%`,
-                    }}
-                  />
-
-                  <div className="absolute bottom-full left-1/2 mb-2 hidden -translate-x-1/2 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-bold text-white shadow-lg group-hover:block whitespace-nowrap">
-                    {item.count} complaint
-                  </div>
-                </div>
-
-                <span className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-xs font-bold text-slate-400">
-                  {item.label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-
-    {/* =========================
-        Complaint Type + Quick Analytics
-    ========================= */}
+  
+    
     <section className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
 
       {/* Top Complaint Types */}
@@ -1855,3 +1921,4 @@ return ( <svg
 }
 
 export default AdminDashboard;
+
